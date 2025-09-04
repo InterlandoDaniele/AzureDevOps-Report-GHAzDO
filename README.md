@@ -51,15 +51,15 @@ Aggiungi il seguente task PowerShell alla tua pipeline Azure DevOps per eseguire
  BUILD_SOURCEBRANCH: $(Build.SourceBranch)
  BUILD_DEFINITIONNAME: $(Build.DefinitionName)
 ```
-##Abilita l'opzione "Allow scripts to access the OAuth token" nel job della pipeline.
+## Abilita l'opzione "Allow scripts to access the OAuth token" nel job della pipeline.
 
-##File Generati
+## File Generati
 
 - AdvancedSecurityReport_Detailed_<timestamp>.csv: Contiene dettagli come AlertId, CVEId, CVSSScore, ecc. (senza AlertType, LocationFile, LocationLine, Description).
 - AdvancedSecurityReport_Aggregated_<timestamp>.csv: Riassume i CVE con CVEId, CountAlerts, ecc.
 - AdvancedSecurityReport_Secrets_<timestamp>.csv: Elenca gli alert segreti con AlertId, SecretType, LocationFile, ecc.
 
-##Note
+## Note
 
 - Filtri: Il filtraggio per criteria.ref=$buildBranch e criteria.pipelineName può essere regolato.
 - Limiti: $maxAlertsPerRepo è impostato a 500; aumentalo se necessario.
