@@ -154,7 +154,7 @@ function Get-SecurityAlerts {
                         if ($alertIds.ContainsKey($alertId)) { Write-Host "Alert $alertId duplicato, ignorato"; continue }
                         $alertIds[$alertId] = $true
                         $alertProps = Extract-Properties -object $alert
-                        $alertType = if ($alertProps.PSObject.Properties.Name -contains "alertType") { $alertProps.alertType } else { "N/A" }
+                        $alertType = if ($alert.PSObject.Properties.Name -contains "alertType") { $alert.alertType } else { "N/A" }
                         $cveId = ($alertProps.Keys | Where-Object { $_ -like "*cveId" } | ForEach-Object { $alertProps[$_] } | Where-Object { $_ }) | Select-Object -First 1
                         if ($cveId) {
                             $cveDetails = Get-CveDetails -cveId $cveId
@@ -173,6 +173,21 @@ function Get-SecurityAlerts {
                             $isKev = "N/A"
                             $priority = "N/A"
                         }
+                        # Mappatura corretta per LocationFile e LocationLine
+                        $locationFiles = @()
+                        $locationLines = @()
+                        foreach ($location in $alert.physicalLocations) {
+                            if ($location.filePath -and $location.region.lineStart) {
+                                $locationFiles += $location.filePath
+                                $locationLines += $location.region.lineStart
+                            }
+                        }
+                        $locationFile = if ($locationFiles) { $locationFiles -join "; " } else { "N/A" }
+                        $locationLine = if ($locationLines) { $locationLines -join "; " } else { "N/A" }
+                        # Mappatura corretta per Description con fallback
+                        $description = if ($alert.tools -and $alert.tools[0].rules -and $alert.tools[0].rules[0].description) { $alert.tools[0].rules[0].description } else { if ($alert.title) { $alert.title } else { "N/A" } }
+                        $state = if ($alert.PSObject.Properties.Name -contains "state") { $alert.state } else { "N/A" }
+                        $linkItem = "https://dev.azure.com/$orgName/$projName/_git/$repoId/alerts/$alertId"
                         $alertObj = [PSCustomObject]@{
                             AlertId = $alertId
                             CVEId = $cveId
@@ -189,11 +204,11 @@ function Get-SecurityAlerts {
                             GitRef = $alert.gitRef
                             FirstSeenDate = if ($alert.PSObject.Properties.Name -contains "firstSeenDate") { $alert.firstSeenDate } else { "N/A" }
                             AlertType = $alertType
-                            LocationFile = if ($alertProps.PSObject.Properties.Name -contains "location.file") { $alertProps."location.file" } else { "N/A" }
-                            LocationLine = if ($alertProps.PSObject.Properties.Name -contains "location.line") { $alertProps."location.line" } else { "N/A" }
-                            Description = if ($alertProps.PSObject.Properties.Name -contains "description") { $alertProps.description } else { "N/A" }
-                            State = if ($alert.PSObject.Properties.Name -contains "state") { $alert.state } else { "N/A" }
-                            LinkItem = "https://dev.azure.com/$orgName/$projName/_git/$repoId/alerts/$alertId"
+                            LocationFile = $locationFile
+                            LocationLine = $locationLine
+                            Description = $description
+                            State = $state
+                            LinkItem = $linkItem
                         }
                         foreach ($k in $alertProps.Keys) {
                             if ($alertObj.PSObject.Properties.Name -notcontains $k) { $alertObj | Add-Member -MemberType NoteProperty -Name $k -Value $alertProps[$k] }
@@ -244,19 +259,33 @@ function Get-SecretAlerts {
                         if ($alertIds.ContainsKey($alertId)) { Write-Host "Alert $alertId duplicato, ignorato"; continue }
                         $alertIds[$alertId] = $true
                         $alertProps = Extract-Properties -object $alert
-                        $secretType = if ($alertProps.PSObject.Properties.Name -contains "secretType") { $alertProps.secretType } else { "N/A" }
-                        $locationFile = if ($alertProps.PSObject.Properties.Name -contains "location.file") { $alertProps."location.file" } else { "N/A" }
-                        $locationLine = if ($alertProps.PSObject.Properties.Name -contains "location.line") { $alertProps."location.line" } else { "N/A" }
-                        $description = if ($alertProps.PSObject.Properties.Name -contains "description") { $alertProps.description } else { "N/A" }
+
+                        # Mappatura corretta basata sulla struttura JSON
+                        $secretType = if ($alert.PSObject.Properties.Name -contains "title") { $alert.title } else { "N/A" }
+                        $locationFiles = @()
+                        $locationLines = @()
+                        foreach ($location in $alert.physicalLocations) {
+                            if ($location.filePath -and $location.region.lineStart) {
+                                $locationFiles += $location.filePath
+                                $locationLines += $location.region.lineStart
+                            }
+                        }
+                        $locationFile = if ($locationFiles) { $locationFiles -join "; " } else { "N/A" }
+                        $locationLine = if ($locationLines) { $locationLines -join "; " } else { "N/A" }
+                        $description = if ($alert.tools[0].rules[0].description) { $alert.tools[0].rules[0].description } else { if ($alert.title) { $alert.title } else { "N/A" } }
                         $state = if ($alert.PSObject.Properties.Name -contains "state") { $alert.state } else { "N/A" }
                         $confidence = if ($alert.PSObject.Properties.Name -contains "confidence") { $alert.confidence } else { "N/A" }
                         $severity = if ($alert.PSObject.Properties.Name -contains "severity") { $alert.severity } else { "N/A" }
                         $firstSeenDate = if ($alert.PSObject.Properties.Name -contains "firstSeenDate") { $alert.firstSeenDate } else { "N/A" }
-                        $dismissalType = if ($alertProps.PSObject.Properties.Name -contains "dismissal.dismissalType") { $alertProps."dismissal.dismissalType" } else { "N/A" }
-                        $dismissalUser = if ($alertProps.PSObject.Properties.Name -contains "dismissal.stateChangedByIdentity.displayName") { $alertProps."dismissal.stateChangedByIdentity.displayName" } else { "N/A" }
-                        $dismissalComment = if ($alertProps.PSObject.Properties.Name -contains "dismissal.message") { $alertProps."dismissal.message" } else { "N/A" }
-                        $dismissalDate = if ($alertProps.PSObject.Properties.Name -contains "dismissal.requestedOn") { $alertProps."dismissal.requestedOn" } else { "N/A" }
+                        $lastSeenDate = if ($alert.PSObject.Properties.Name -contains "lastSeenDate") { $alert.lastSeenDate } else { "N/A" }
+                        $introducedDate = if ($alert.PSObject.Properties.Name -contains "introducedDate") { $alert.introducedDate } else { "N/A" }
+                        $dismissalType = if ($alert.dismissal -and $alert.dismissal.PSObject.Properties.Name -contains "dismissalType") { $alert.dismissal.dismissalType } else { "N/A" }
+                        $dismissalUser = if ($alert.dismissal -and $alert.dismissal.stateChangedByIdentity) { $alert.dismissal.stateChangedByIdentity.displayName } else { "N/A" }
+                        $dismissalComment = if ($alert.dismissal -and $alert.dismissal.PSObject.Properties.Name -contains "message") { $alert.dismissal.message } else { "N/A" }
+                        $dismissalDate = if ($alert.dismissal -and $alert.dismissal.PSObject.Properties.Name -contains "requestedOn") { $alert.dismissal.requestedOn } else { "N/A" }
                         $linkItem = "https://dev.azure.com/$orgName/$projName/_git/$repoId/alerts/$alertId"
+                        $gitRef = if ($alert.PSObject.Properties.Name -contains "gitRef") { $alert.gitRef } else { "N/A" }
+
                         $secretAlerts += [PSCustomObject]@{
                             AlertId = $alertId
                             AlertType = "secret"
@@ -268,12 +297,14 @@ function Get-SecretAlerts {
                             Confidence = $confidence
                             Severity = $severity
                             FirstSeenDate = $firstSeenDate
+                            LastSeenDate = $lastSeenDate
+                            IntroducedDate = $introducedDate
                             DismissalType = $dismissalType
                             DismissalUser = $dismissalUser
                             DismissalComment = $dismissalComment
                             DismissalDate = $dismissalDate
                             LinkItem = $linkItem
-                            GitRef = $alert.gitRef
+                            GitRef = $gitRef
                         }
                         Write-Host "Segreto aggiunto: ID=$alertId, SecretType=$secretType, Confidence=$confidence"
                     }
@@ -302,7 +333,7 @@ if (-not $securityAlerts -or $securityAlerts.Count -eq 0) {
 }
 if (-not $secretAlerts -or $secretAlerts.Count -eq 0) {
     $secretAlerts += [PSCustomObject]@{
-        AlertId = "N/A"; AlertType = "secret"; SecretType = "N/A"; LocationFile = "N/A"; LocationLine = "N/A"; Description = "N/A"; State = "N/A"; Confidence = "N/A"; Severity = "N/A"; FirstSeenDate = "N/A"; DismissalType = "N/A"; DismissalUser = "N/A"; DismissalComment = "N/A"; DismissalDate = "N/A"; LinkItem = "N/A"; GitRef = "N/A"
+        AlertId = "N/A"; AlertType = "secret"; SecretType = "N/A"; LocationFile = "N/A"; LocationLine = "N/A"; Description = "N/A"; State = "N/A"; Confidence = "N/A"; Severity = "N/A"; FirstSeenDate = "N/A"; LastSeenDate = "N/A"; IntroducedDate = "N/A"; DismissalType = "N/A"; DismissalUser = "N/A"; DismissalComment = "N/A"; DismissalDate = "N/A"; LinkItem = "N/A"; GitRef = "N/A"
     }
 }
 $detailedCsv = Join-Path $outputDir "AdvancedSecurityReport_Detailed_${timeStamp}.csv"
@@ -328,7 +359,7 @@ $aggCve = $securityAlerts | Where-Object { $_.CVEId -ne "N/A" } | Group-Object C
 $aggregatedCsv = Join-Path $outputDir "AdvancedSecurityReport_Aggregated_${timeStamp}.csv"
 $aggCve | Export-Csv -Path $aggregatedCsv -NoTypeInformation -Encoding UTF8
 $secretsCsv = Join-Path $outputDir "AdvancedSecurityReport_Secrets_${timeStamp}.csv"
-$secretAlerts | Select-Object AlertId,AlertType,SecretType,LocationFile,LocationLine,Description,State,Confidence,Severity,FirstSeenDate,DismissalType,DismissalUser,DismissalComment,DismissalDate,LinkItem,GitRef | Export-Csv -Path $secretsCsv -NoTypeInformation -Encoding UTF8
+$secretAlerts | Select-Object AlertId, AlertType, SecretType, LocationFile, LocationLine, Description, State, Confidence, Severity, FirstSeenDate, LastSeenDate, IntroducedDate, DismissalType, DismissalUser, DismissalComment, DismissalDate, LinkItem, GitRef | Export-Csv -Path $secretsCsv -NoTypeInformation -Encoding UTF8
 $detailedCsvFull = (Resolve-Path $detailedCsv).Path
 $aggregatedCsvFull = (Resolve-Path $aggregatedCsv).Path
 $secretsCsvFull = (Resolve-Path $secretsCsv).Path
@@ -336,4 +367,3 @@ Write-Host "##vso[artifact.upload artifactname=AdvancedSecurityReport_Detailed;]
 Write-Host "##vso[artifact.upload artifactname=AdvancedSecurityReport_Aggregated;]$aggregatedCsvFull"
 Write-Host "##vso[artifact.upload artifactname=AdvancedSecurityReport_Secrets;]$secretsCsvFull"
 Write-Host "Report generati e pubblicati."
-
