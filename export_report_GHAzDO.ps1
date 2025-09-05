@@ -193,7 +193,8 @@ function Get-SecurityAlerts {
                             CVEId = $cveId
                             CVSSScore = $cveDetails.CVSSScore
                             CVSSVersion = $cveDetails.CVSSVersion
-                            Severity = $cveDetails.Severity
+                            Severity = $cveDetails.Severity  # Severity dal CVE (NVD)
+                            AlertSeverity = if ($alert.PSObject.Properties.Name -contains "severity") { $alert.severity } else { "N/A" }  # Severity nativa dell'alert
                             Vector = $cveDetails.Vector
                             EPSS = $epssInfo.EPSS
                             EPSSPercentile = $epssInfo.Percentile
@@ -328,7 +329,7 @@ $securityAlerts = Get-SecurityAlerts
 $secretAlerts = Get-SecretAlerts
 if (-not $securityAlerts -or $securityAlerts.Count -eq 0) {
     $securityAlerts += [PSCustomObject]@{
-        AlertId = "N/A"; CVEId = "N/A"; CVSSScore = "N/A"; CVSSVersion = "N/A"; Severity = "N/A"; Vector = "N/A"; EPSS = "N/A"; EPSSPercentile = "N/A"; CISA_KEV = "N/A"; PatchAvailable = $false; ExploitPublic = $false; Priority = "N/A"; GitRef = "N/A"; FirstSeenDate = "N/A"; AlertType = "N/A"; LocationFile = "N/A"; LocationLine = "N/A"; Description = "N/A"; State = "N/A"; LinkItem = "N/A"
+        AlertId = "N/A"; CVEId = "N/A"; CVSSScore = "N/A"; CVSSVersion = "N/A"; Severity = "N/A"; AlertSeverity = "N/A"; Vector = "N/A"; EPSS = "N/A"; EPSSPercentile = "N/A"; CISA_KEV = "N/A"; PatchAvailable = $false; ExploitPublic = $false; Priority = "N/A"; GitRef = "N/A"; FirstSeenDate = "N/A"; AlertType = "N/A"; LocationFile = "N/A"; LocationLine = "N/A"; Description = "N/A"; State = "N/A"; LinkItem = "N/A"
     }
 }
 if (-not $secretAlerts -or $secretAlerts.Count -eq 0) {
@@ -346,6 +347,7 @@ $aggCve = $securityAlerts | Where-Object { $_.CVEId -ne "N/A" } | Group-Object C
         CVSSScore = ($_.Group | Select-Object -First 1).CVSSScore
         CVSSVersion = ($_.Group | Select-Object -First 1).CVSSVersion
         Severity = ($_.Group | Select-Object -First 1).Severity
+        AlertSeverity = ($_.Group | Select-Object -First 1).AlertSeverity
         Vector = ($_.Group | Select-Object -First 1).Vector
         EPSS = ($_.Group | Select-Object -First 1).EPSS
         EPSSPercentile = ($_.Group | Select-Object -First 1).EPSSPercentile
