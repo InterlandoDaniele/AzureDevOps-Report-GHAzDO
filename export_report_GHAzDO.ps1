@@ -1,16 +1,62 @@
+#Task da inserire nella pipeline per richiamare lo script#
+
+
+#$ErrorActionPreference = "Stop"
+#$scriptUrl = ""
+#$authHeader = @{Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$($env:SYSTEM_ACCESSTOKEN)"))}
+#$tempScriptPath = "$(System.DefaultWorkingDirectory)/....."
+#Write-Host "Downloading script from $scriptUrl"
+#Invoke-WebRequest -Uri $scriptUrl -Headers $authHeader -OutFile $tempScriptPath -UseBasicParsing
+#Write-Host "Executing script: $tempScriptPath"
+#& $tempScriptPath
+
 $ErrorActionPreference = "Stop"
-$orgName = $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -replace "https://dev.azure.com/", "" -replace "/$", ""
+Write-Host "Raw SYSTEM_TEAMFOUNDATIONCOLLECTIONURI: $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI"
+$orgName = $env:SYSTEM_TEAMFOUNDATIONCOLLECTIONURI -replace "^https://dev\.azure\.com/", "" -replace "/$", ""
+$orgName = $orgName -replace "^https://", "" -replace "//", "/"
+if ($orgName -notmatch "\.visualstudio\.com") {
+    $orgName = "$orgName.visualstudio.com"
+}
 $projName = $env:SYSTEM_TEAMPROJECT
 $repoName = $env:BUILD_REPOSITORY_NAME
 $patToken = $env:SYSTEM_ACCESSTOKEN
 $apiVersion = "7.2-preview.1"
 $maxAlertsPerRepo = 500
 $buildBranch = $env:BUILD_SOURCEBRANCH
-if (-not $orgName -or -not $projName -or -not $repoName -or -not $patToken -or -not $buildBranch) { Write-Host "Variabili d'ambiente mancanti"; exit 1 }
+if (-not $orgName -or -not $projName -or -not $repoName -or -not $patToken -or -not $buildBranch) { 
+    $patTokenStatus = if ($patToken) { "Present" } else { "Missing" }
+    Write-Host "Variabili d'ambiente mancanti: orgName=$orgName, projName=$projName, repoName=$repoName, patToken=[$patTokenStatus], buildBranch=$buildBranch"; 
+    exit 1 
+}
 $authHeader = @{Authorization = "Basic " + [Convert]::ToBase64String([Text.Encoding]::ASCII.GetBytes(":$patToken"));"Content-Type" = "application/json"}
-$repoApiUrl = "https://dev.azure.com/$orgName/$projName/_apis/git/repositories?api-version=$apiVersion"
-$repoData = Invoke-WebRequest -Uri $repoApiUrl -Headers $authHeader -Method Get -UseBasicParsing
-if ($repoData.StatusCode -ne 200) { Write-Host "Errore repository: $($repoData.StatusCode) $($repoData.StatusDescription)"; exit 1 }
+Write-Host "orgName: $orgName"
+Write-Host "projName: $projName"
+$repoApiUrl = "https://$orgName/$projName/_apis/git/repositories?api-version=$apiVersion"
+Write-Host "URL generato: $repoApiUrl"  # Debug per verificare l'URL
+Write-Host "AuthHeader generato: $($authHeader.Authorization)"  # Debug per verificare l'header
+Write-Host "PAT length: $($patToken.Length)"  # Debug per verificare la lunghezza del token
+$systemAccessTokenStatus = if ($env:SYSTEM_ACCESSTOKEN) { "Yes" } else { "No" }
+Write-Host "Environment SYSTEM_ACCESSTOKEN available: $systemAccessTokenStatus"  # Debug per verificare la variabile
+# Verifica esplicita del token
+if ([string]::IsNullOrEmpty($patToken) -or $patToken.Length -lt 10) {
+    Write-Host "Errore: Il token PAT sembra non valido o troppo corto. Lunghezza: $($patToken.Length)"
+    exit 1
+}
+try {
+    $repoData = Invoke-WebRequest -Uri $repoApiUrl -Headers $authHeader -Method Get -UseBasicParsing -ErrorAction Stop
+    if ($repoData.StatusCode -ne 200) { Write-Host "Errore repository: $($repoData.StatusCode) $($repoData.StatusDescription)"; exit 1 }
+} catch {
+    Write-Host "Errore dettagliato: $($_.Exception.Message)"
+    Write-Host "Response: $($_.Exception.Response.StatusCode) $($_.Exception.Response.StatusDescription)"
+    if ($_.Exception.Response) {
+        $responseStream = $_.Exception.Response.GetResponseStream()
+        $reader = New-Object System.IO.StreamReader($responseStream)
+        $responseBody = $reader.ReadToEnd()
+        Write-Host "Response Body: $responseBody"
+        $reader.Close()
+    }
+    exit 1
+}
 $repoId = (($repoData.Content | ConvertFrom-Json).value | Where-Object { $_.name -eq $repoName }).id
 if (-not $repoId) { Write-Host "Repository non trovato: $repoName"; exit 1 }
 $timeStamp = Get-Date -Format "yyyyMMdd_HHmmss"
@@ -35,60 +81,78 @@ function Extract-Properties {
 function Get-CveDetails {
     param($cveId)
     $nvdApiUrl = "https://services.nvd.nist.gov/rest/json/cves/2.0?cveId=$cveId"
-    try {
-        Write-Host "Richiedendo dati per CVE: $cveId"
-        $response = Invoke-RestMethod -Uri $nvdApiUrl -Method Get -ErrorAction Stop -TimeoutSec 30
-        Start-Sleep -Seconds 6
-        $cveData = $response.vulnerabilities[0].cve
-        if ($cveData) {
-            $metrics = $null
-            $version = "N/A"
-            if ($cveData.metrics.cvssMetricV40) { $metrics = $cveData.metrics.cvssMetricV40[0]; $version = "4.0" }
-            elseif ($cveData.metrics.cvssMetricV31) { $metrics = $cveData.metrics.cvssMetricV31[0]; $version = "3.1" }
-            elseif ($cveData.metrics.cvssMetricV30) { $metrics = $cveData.metrics.cvssMetricV30[0]; $version = "3.0" }
-            $cvssScore = if ($metrics) { $metrics.cvssData.baseScore } else { "N/A" }
-            $severity = if ($metrics -and $metrics.cvssData.PSObject.Properties.Name -contains "baseSeverity") { $metrics.cvssData.baseSeverity } else { "N/A" }
-            $vector = if ($metrics) { $metrics.cvssData.vectorString } else { "N/A" }
-            $patchAvailable = $false
-            $exploitPublic = $false
-            if ($cveData.references) {
-                foreach ($ref in $cveData.references) {
-                    if ("Patch" -in $ref.tags -or "Vendor Advisory" -in $ref.tags) { $patchAvailable = $true }
-                    $url = $ref.url.ToLower()
-                    if ($url -match "exploit|exploit-db|packetstorm|metasploit|github.com") { $exploitPublic = $true }
+    $maxRetries = 3
+    $retryDelay = 15  # Secondi tra ritentativi (per rispettare il rate limit)
+    for ($retry = 1; $retry -le $maxRetries; $retry++) {
+        try {
+            Write-Host "Richiedendo dati per CVE: $cveId (tentativo $retry)"
+            $response = Invoke-RestMethod -Uri $nvdApiUrl -Method Get -ErrorAction Stop -TimeoutSec 30
+            Start-Sleep -Seconds 6  # Pausa standard tra chiamate
+            $cveData = $response.vulnerabilities[0].cve
+            if ($cveData) {
+                $metrics = $null
+                $version = "N/A"
+                if ($cveData.metrics.cvssMetricV40) { $metrics = $cveData.metrics.cvssMetricV40[0]; $version = "4.0" }
+                elseif ($cveData.metrics.cvssMetricV31) { $metrics = $cveData.metrics.cvssMetricV31[0]; $version = "3.1" }
+                elseif ($cveData.metrics.cvssMetricV30) { $metrics = $cveData.metrics.cvssMetricV30[0]; $version = "3.0" }
+                $cvssScore = if ($metrics) { $metrics.cvssData.baseScore } else { "N/A" }
+                $severity = if ($metrics -and $metrics.cvssData.PSObject.Properties.Name -contains "baseSeverity") { $metrics.cvssData.baseSeverity } else { "N/A" }
+                $vector = if ($metrics) { $metrics.cvssData.vectorString } else { "N/A" }
+                $patchAvailable = $false
+                $exploitPublic = $false
+                if ($cveData.references) {
+                    foreach ($ref in $cveData.references) {
+                        if ("Patch" -in $ref.tags -or "Vendor Advisory" -in $ref.tags) { $patchAvailable = $true }
+                        $url = $ref.url.ToLower()
+                        if ($url -match "exploit|exploit-db|packetstorm|metasploit|github.com") { $exploitPublic = $true }
+                    }
+                }
+                return [PSCustomObject]@{
+                    CVEId = $cveId
+                    CVSSScore = $cvssScore
+                    CVSSVersion = $version
+                    Severity = $severity
+                    Vector = $vector
+                    PatchAvailable = $patchAvailable
+                    ExploitPublic = $exploitPublic
                 }
             }
+            Write-Host "Nessun dato trovato per CVE: $cveId"
             return [PSCustomObject]@{
                 CVEId = $cveId
-                CVSSScore = $cvssScore
-                CVSSVersion = $version
-                Severity = $severity
-                Vector = $vector
-                PatchAvailable = $patchAvailable
-                ExploitPublic = $exploitPublic
+                CVSSScore = "N/A"
+                CVSSVersion = "N/A"
+                Severity = "N/A"
+                Vector = "N/A"
+                PatchAvailable = $false
+                ExploitPublic = $false
+            }
+        } catch {
+            Write-Host "Errore durante la richiesta per CVE: $cveId - $_"
+            if ($retry -lt $maxRetries -and $_.Exception.Response.StatusCode.value__ -eq 429) {
+                Write-Host "Rate limit rilevato, ritento tra $retryDelay secondi (tentativo $retry/$maxRetries)"
+                Start-Sleep -Seconds $retryDelay
+            } else {
+                return [PSCustomObject]@{
+                    CVEId = $cveId
+                    CVSSScore = "N/A"
+                    CVSSVersion = "N/A"
+                    Severity = "N/A"
+                    Vector = "N/A"
+                    PatchAvailable = $false
+                    ExploitPublic = $false
+                }
             }
         }
-        Write-Host "Nessun dato trovato per CVE: $cveId"
-        return [PSCustomObject]@{
-            CVEId = $cveId
-            CVSSScore = "N/A"
-            CVSSVersion = "N/A"
-            Severity = "N/A"
-            Vector = "N/A"
-            PatchAvailable = $false
-            ExploitPublic = $false
-        }
-    } catch {
-        Write-Host "Errore durante la richiesta per CVE: $cveId - $_"
-        return [PSCustomObject]@{
-            CVEId = $cveId
-            CVSSScore = "N/A"
-            CVSSVersion = "N/A"
-            Severity = "N/A"
-            Vector = "N/A"
-            PatchAvailable = $false
-            ExploitPublic = $false
-        }
+    }
+    return [PSCustomObject]@{
+        CVEId = $cveId
+        CVSSScore = "N/A"
+        CVSSVersion = "N/A"
+        Severity = "N/A"
+        Vector = "N/A"
+        PatchAvailable = $false
+        ExploitPublic = $false
     }
 }
 
@@ -130,8 +194,8 @@ function Load-CisaKev {
 
 function Get-SecurityAlerts {
     $alertsUrls = @(
-        "https://advsec.dev.azure.com/$orgName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=1&criteria.alertState=active&criteria.ref=$buildBranch&top=$maxAlertsPerRepo",
-        "https://advsec.dev.azure.com/$orgName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=code&criteria.alertState=active&criteria.ref=$buildBranch&top=$maxAlertsPerRepo"
+        "https://OrganizzazioneXXX.advsec.visualstudio.com/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=1&criteria.alertState=active&criteria.ref=$buildBranch&top=$maxAlertsPerRepo",
+        "https://OrganizzazioneXXX.advsec.visualstudio.com/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=code&criteria.alertState=active&criteria.ref=$buildBranch&top=$maxAlertsPerRepo"
     )
     if ($env:BUILD_DEFINITIONNAME) {
         $encodedPipelineName = [System.Web.HttpUtility]::UrlEncode($env:BUILD_DEFINITIONNAME)
@@ -232,9 +296,10 @@ function Get-SecurityAlerts {
 }
 
 function Get-SecretAlerts {
+    $orgShortName = "OrganizzazioneXXX"
     $alertsUrls = @(
-        "https://advsec.dev.azure.com/$orgName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=secret&criteria.alertState=active&top=$maxAlertsPerRepo",
-        "https://advsec.dev.azure.com/$orgName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=secret&criteria.confidenceLevels=other&criteria.alertState=active&top=$maxAlertsPerRepo"
+        "https://advsec.dev.azure.com/$orgShortName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=secret&criteria.alertState=active&top=$maxAlertsPerRepo",
+        "https://advsec.dev.azure.com/$orgShortName/$projName/_apis/alert/repositories/$repoId/alerts?api-version=$apiVersion&criteria.alertType=secret&criteria.confidenceLevels=other&criteria.alertState=active&top=$maxAlertsPerRepo"
     )
     $secretAlerts = @()
     $alertIds = @{}
